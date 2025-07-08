@@ -4,161 +4,98 @@ import SwiftUI
 struct TaskItem: Identifiable, Hashable {
     let id = UUID()
     var name: String
-    var effort: Double // Scale of 1 to 10
-    var impact: Double // Scale of 1 to 10
+    var importance: Double // Scale of 1 to 10
+    var urgency: Double    // Scale of 1 to 10
 }
 
-// MARK: - Secrets Management
-// This struct safely loads the API key from the Secrets.plist file.
-struct Secrets {
-    static var groqApiKey: String? {
-        guard let path = Bundle.main.path(forResource: "Secrets", ofType: "plist"),
-              let dict = NSDictionary(contentsOfFile: path) as? [String: AnyObject] else {
-            return nil
-        }
-        return dict["GroqApiKey"] as? String
-    }
+// MARK: - Custom Colors
+extension Color {
+    static let eisenhowerRed = Color(red: 192/255, green: 57/255, blue: 43/255)
+    static let eisenhowerOrange = Color(red: 230/255, green: 126/255, blue: 34/255)
+    static let eisenhowerGreen = Color(red: 39/255, green: 174/255, blue: 96/255)
+    static let eisenhowerGrey = Color(red: 127/255, green: 140/255, blue: 141/255)
 }
 
 // MARK: - Groq API Networking Layer
-
-// Custom error for our API service
 enum APIError: Error, LocalizedError {
-    case missingApiKey
-    case invalidURL
-    case requestFailed(Error)
-    case invalidResponse
-    case noData
-    case decodingError(Error)
-    
+    case missingAPIKey, invalidURL, requestFailed(Error), decodingFailed(Error), noContent
     var errorDescription: String? {
         switch self {
-        case .missingApiKey: return "Groq API Key is missing. Please add it to Secrets.plist."
+        case .missingAPIKey: return "API Key is missing. Check your Secrets.plist for a key named 'GroqAPIKey'."
         case .invalidURL: return "The API endpoint URL is invalid."
-        case .requestFailed: return "The network request failed."
-        case .invalidResponse: return "Received an invalid response from the server."
-        case .noData: return "No content was returned from the AI."
-        case .decodingError: return "Failed to decode the server's response."
+        case .requestFailed: return "The network request failed. Check your connection."
+        case .decodingFailed(let error): return "Failed to process the server response. Details: \(error.localizedDescription)"
+        case .noContent: return "The AI returned no content. Please try again."
         }
     }
 }
 
-// Codable structs to match the Groq API JSON structure
-struct GroqRequest: Codable {
-    let messages: [ChatMessage]
-    let model: String
-    let temperature: Double
+struct Secrets {
+    static var apiKey: String {
+        guard let url = Bundle.main.url(forResource: "Secrets", withExtension: "plist"),
+              let data = try? Data(contentsOf: url),
+              let secrets = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else { return "" }
+        return secrets["GroqAPIKey"] as? String ?? ""
+    }
 }
 
-struct ChatMessage: Codable {
-    let role: String
-    let content: String
-}
+struct GroqRequest: Codable { let messages: [Message]; let model: String }
+struct Message: Codable { let role: String; let content: String }
+struct GroqResponse: Codable { let choices: [Choice] }
+struct Choice: Codable { let message: ResponseMessage }
+struct ResponseMessage: Codable { let role: String; let content: String }
 
-struct GroqResponse: Codable {
-    let choices: [Choice]
-}
-
-struct Choice: Codable {
-    let message: ChatMessage
-}
-
-
-// The updated AI Service to make real network calls
 class AIService {
+    private static let groqAPIEndpoint = "https://api.groq.com/openai/v1/chat/completions"
     
-    private static let groqAPIEndpoint = "https://api.groq.com/openai/v4/chat/completions"
-    
-    // This is the core AI function. It's now async and can throw errors.
     static func getStrategicSummary(for tasks: [TaskItem]) async throws -> String {
+        let apiKey = Secrets.apiKey
+        guard !apiKey.isEmpty else { throw APIError.missingAPIKey }
+        guard let url = URL(string: groqAPIEndpoint) else { throw APIError.invalidURL }
         
-        // 1. Ensure API Key exists
-        guard let apiKey = Secrets.groqApiKey else {
-            throw APIError.missingApiKey
-        }
+        let doTasks = tasks.filter { $0.importance > 5 && $0.urgency > 5 }.map { $0.name }
+        let planTasks = tasks.filter { $0.importance > 5 && $0.urgency <= 5 }.map { $0.name }
         
-        // 2. Categorize tasks for the prompt
-        let quickWins = tasks.filter { $0.impact > 5 && $0.effort <= 5 }
-        let majorProjects = tasks.filter { $0.impact > 5 && $0.effort > 5 }
-        let fillIns = tasks.filter { $0.impact <= 5 && $0.effort <= 5 }
-        let thanklessTasks = tasks.filter { $0.impact <= 5 && $0.effort > 5 }
-        
-        // 3. Perfect the Prompt for Llama3
-        // The system prompt sets the AI's persona and instructions.
         let systemPrompt = """
-        You are FocusAI, a world-class productivity coach. Your tone is insightful, encouraging, and highly strategic.
-        Analyze the user's task list from an Eisenhower Matrix. Provide a concise, actionable summary formatted in markdown.
-        - Start with a sharp, one-sentence overview.
-        - Use bullet points for 2-3 specific recommendations.
-        - Focus on the *'why'* behind your advice (e.g., 'Tackle Quick Wins to build momentum').
-        - Address the user directly ('You have...', 'Your focus should be...').
+        You are FocusAI, a productivity strategist. Analyze the user's task list based on the Eisenhower Matrix.
+        Your response MUST be a powerful, concise summary of their strategic position.
+        It must be 30 words or less. Do not use pleasantries, markdown, or extra text.
         """
         
-        // The user prompt provides the data.
         let userPrompt = """
-        Here is my current task distribution:
-        - Quick Wins (High Impact, Low Effort): \(quickWins.count) tasks. Tasks: \(quickWins.map { $0.name }.joined(separator: ", "))
-        - Major Projects (High Impact, High Effort): \(majorProjects.count) tasks. Tasks: \(majorProjects.map { $0.name }.joined(separator: ", "))
-        - Fill-ins (Low Impact, Low Effort): \(fillIns.count) tasks. Tasks: \(fillIns.map { $0.name }.joined(separator: ", "))
-        - Thankless Tasks (Low Impact, High Effort): \(thanklessTasks.count) tasks. Tasks: \(thanklessTasks.map { $0.name }.joined(separator: ", "))
-        
-        Give me your strategic analysis.
+        My urgent & important tasks are: \(doTasks.isEmpty ? "None" : doTasks.joined(separator: ", ")).
+        My important but not urgent tasks are: \(planTasks.isEmpty ? "None" : planTasks.joined(separator: ", ")).
+        Give me a direct, strategic summary.
         """
 
-        let messages = [
-            ChatMessage(role: "system", content: systemPrompt),
-            ChatMessage(role: "user", content: userPrompt)
-        ]
-        
-        // 4. Build the Request
-        let groqRequest = GroqRequest(messages: messages, model: "llama3-8b-8192", temperature: 0.7)
-        
-        guard let url = URL(string: groqAPIEndpoint) else {
-            throw APIError.invalidURL
-        }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(groqRequest)
         
-        // 5. Execute the network call
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let requestBody = GroqRequest(messages: [Message(role: "system", content: systemPrompt), Message(role: "user", content: userPrompt)], model: "llama3-8b-8192")
+        request.httpBody = try JSONEncoder().encode(requestBody)
         
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw APIError.invalidResponse
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let response = try JSONDecoder().decode(GroqResponse.self, from: data)
+            guard let content = response.choices.first?.message.content else { throw APIError.noContent }
+            return content
+        } catch let urlError as URLError {
+            throw APIError.requestFailed(urlError)
+        } catch {
+            throw APIError.decodingFailed(error)
         }
-        
-        // 6. Decode the response and return the content
-        let decodedResponse = try JSONDecoder().decode(GroqResponse.self, from: data)
-        
-        guard let content = decodedResponse.choices.first?.message.content else {
-            throw APIError.noData
-        }
-        
-        return content
     }
 }
-
 
 // MARK: - Main View
 struct FocusView: View {
     
-    // MARK: State Management
-    @State private var tasks: [TaskItem] = [
-        .init(name: "Launch marketing campaign", effort: 4, impact: 9),
-        .init(name: "Overhaul user authentication", effort: 8, impact: 10),
-        .init(name: "Respond to customer feedback", effort: 3, impact: 6),
-        .init(name: "Clean up project file structure", effort: 2, impact: 2),
-        .init(name: "Research competitor APIs", effort: 7, impact: 7),
-        .init(name: "Deprecate old V1 API", effort: 9, impact: 5),
-        .init(name: "Fix typo on landing page", effort: 1, impact: 3)
-    ]
+    // CHANGE 2: Tasks array now starts empty for a blank canvas.
+    @State private var tasks: [TaskItem] = []
     
     @State private var selectedTask: TaskItem?
-    
-    // State for the AI Summary
     @State private var showAISummarySheet = false
     @State private var aiSummary: String?
     @State private var isFetchingSummary = false
@@ -172,16 +109,14 @@ struct FocusView: View {
                 TaskInputView(tasks: $tasks)
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Strategic Focus")
+            .navigationTitle("Eisenhower Matrix")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button(action: {
-                        // Trigger the async task
-                        fetchAISummary()
-                    }) {
+                    Button(action: fetchAISummary) {
                         Label("AI Insights", systemImage: "sparkles")
                     }
+                    .disabled(tasks.isEmpty) // Disable button if there are no tasks
                 }
             }
             .sheet(isPresented: $showAISummarySheet) {
@@ -193,151 +128,140 @@ struct FocusView: View {
         }
     }
     
-    // Updated to use modern async/await
     private func fetchAISummary() {
-        isFetchingSummary = true
-        aiSummary = nil
-        showAISummarySheet = true
-        
+        isFetchingSummary = true; aiSummary = nil; showAISummarySheet = true
         Task {
             do {
                 let summary = try await AIService.getStrategicSummary(for: tasks)
-                // UI updates must be on the main thread
-                await MainActor.run {
-                    self.aiSummary = summary
-                    self.isFetchingSummary = false
-                }
+                await MainActor.run { self.aiSummary = summary; self.isFetchingSummary = false }
             } catch {
-                await MainActor.run {
-                    // Display the specific error to the user
-                    self.aiSummary = "### Error\n\n\(error.localizedDescription)"
-                    self.isFetchingSummary = false
-                }
+                await MainActor.run { self.aiSummary = "Error: \(error.localizedDescription)"; self.isFetchingSummary = false }
             }
         }
     }
 }
 
-// MARK: - ALL OTHER SUB-VIEWS (Unchanged)
-// (The rest of the file remains the same as the previous version)
-
-struct AISummaryView: View {
-    @Binding var summary: String?
-    @Binding var isLoading: Bool
-    @Environment(\.dismiss) var dismiss
+// MARK: - UI Helper View for Vertical Text
+// CHANGE 1: New View to render text vertically, character by character.
+struct VerticalTextView: View {
+    let text: String
     
     var body: some View {
-        NavigationView {
-            VStack(spacing: 20) {
-                if isLoading {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                    Text("FocusAI is analyzing your tasks...")
-                        .foregroundColor(.secondary)
-                        .padding()
-                } else if let summary = summary {
-                    ScrollView {
-                        Text(try! AttributedString(markdown: summary))
-                            .padding()
-                    }
-                } else {
-                    Text("No summary available.")
-                }
-                Spacer()
-            }
-            .navigationTitle("AI Strategic Summary")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
+        VStack(spacing: 2) {
+            ForEach(Array(text.enumerated()), id: \.offset) { _, character in
+                Text(String(character))
+                    .kerning(1.5)
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
             }
         }
-        .presentationDetents([.medium, .large])
     }
 }
 
+// MARK: - Eisenhower Matrix View
 struct EisenhowerMatrixView: View {
     let tasks: [TaskItem]
     @Binding var selectedTask: TaskItem?
     
-    var quickWins: [TaskItem]     { tasks.filter { $0.impact > 5 && $0.effort <= 5 } }
-    var majorProjects: [TaskItem] { tasks.filter { $0.impact > 5 && $0.effort > 5 } }
-    var fillIns: [TaskItem]       { tasks.filter { $0.impact <= 5 && $0.effort <= 5 } }
-    var thanklessTasks: [TaskItem]{ tasks.filter { $0.impact <= 5 && $0.effort > 5 } }
+    var doTasks: [TaskItem]         { tasks.filter { $0.importance > 5 && $0.urgency > 5 } }
+    var planTasks: [TaskItem]       { tasks.filter { $0.importance > 5 && $0.urgency <= 5 } }
+    var delegateTasks: [TaskItem]   { tasks.filter { $0.importance <= 5 && $0.urgency > 5 } }
+    var deleteTasks: [TaskItem]     { tasks.filter { $0.importance <= 5 && $0.urgency <= 5 } }
     
     var body: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                QuadrantView(title: "Quick Wins", subtitle: "High Impact, Low Effort", tasks: quickWins, selectedTask: $selectedTask, color: .green, isHighlighted: true)
-                QuadrantView(title: "Major Projects", subtitle: "High Impact, High Effort", tasks: majorProjects, selectedTask: $selectedTask, color: .blue)
+        VStack(spacing: 3) {
+            HStack(spacing: 0) {
+                Spacer(minLength: 20)
+                Text("URGENT").kerning(1.5).font(.caption.weight(.semibold)).foregroundColor(.secondary).frame(maxWidth: .infinity)
+                Text("NOT URGENT").kerning(1.5).font(.caption.weight(.semibold)).foregroundColor(.secondary).frame(maxWidth: .infinity)
+            }.padding(.bottom, 4)
+
+            HStack(spacing: 3) {
+                // CHANGE 1: Using the new VerticalTextView.
+                VerticalTextView(text: "IMPORTANT")
+                    .frame(width: 20)
+                
+                VStack(spacing: 3) {
+                    HStack(spacing: 3) {
+                        QuadrantView(title: "DO", subtitle: "immediately", tasks: doTasks, selectedTask: $selectedTask, color: .eisenhowerRed, iconName: "checkmark")
+                        QuadrantView(title: "PLAN", subtitle: "and prioritize", tasks: planTasks, selectedTask: $selectedTask, color: .eisenhowerOrange, iconName: "clock")
+                    }
+                    HStack(spacing: 3) {
+                        QuadrantView(title: "DELEGATE", subtitle: "for completion", tasks: delegateTasks, selectedTask: $selectedTask, color: .eisenhowerGreen, iconName: "arrow.right")
+                        QuadrantView(title: "DELETE", subtitle: "these tasks", tasks: deleteTasks, selectedTask: $selectedTask, color: .eisenhowerGrey, iconName: "xmark")
+                    }
+                }
             }
-            HStack(spacing: 8) {
-                QuadrantView(title: "Fill-ins", subtitle: "Low Impact, Low Effort", tasks: fillIns, selectedTask: $selectedTask, color: .orange)
-                QuadrantView(title: "Thankless Tasks", subtitle: "Low Impact, High Effort", tasks: thanklessTasks, selectedTask: $selectedTask, color: .red)
+            
+            HStack(spacing: 3) {
+                // CHANGE 1: Using the new VerticalTextView.
+                VerticalTextView(text: "NOT IMPORTANT")
+                    .frame(width: 20)
+                Spacer()
             }
+            .offset(y: -135)
+            .frame(maxHeight: 0)
         }
-        .overlay(XAxisLabel(), alignment: .bottom)
-        .overlay(YAxisLabel(), alignment: .leading)
     }
 }
 
+// MARK: - Quadrant View
 struct QuadrantView: View {
     let title: String, subtitle: String, tasks: [TaskItem]
     @Binding var selectedTask: TaskItem?
     let color: Color
-    var isHighlighted: Bool = false
+    let iconName: String
     
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 16).fill(Color(.secondarySystemGroupedBackground)).shadow(color: isHighlighted ? color.opacity(0.5) : .clear, radius: 10, x: 0, y: 0)
-            VStack {
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(title).font(.headline).foregroundColor(color)
-                        Text(subtitle).font(.caption).foregroundColor(.secondary)
-                    }
-                    Spacer()
-                }.padding()
-                GeometryReader { geo in
-                    ZStack {
-                        ForEach(tasks) { task in
-                            Circle().fill(Color.primary.opacity(0.7)).frame(width: 12, height: 12)
-                                .position(x: (task.effort - 0.5) / 10 * geo.size.width, y: (1 - ((task.impact - 0.5) / 10)) * geo.size.height)
-                                .onTapGesture { self.selectedTask = task }
-                        }
-                    }
+            color
+            Image(systemName: iconName).font(.system(size: 80, weight: .light)).foregroundColor(.white.opacity(0.15))
+            
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title).font(.title2.bold())
+                Text(subtitle).font(.body)
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding()
+
+            GeometryReader { geo in
+                ForEach(tasks) { task in
+                    Circle().fill(.white)
+                        // CHANGE 3: Increased frame size for larger dots.
+                        .frame(width: 14, height: 14)
+                        .shadow(color: .black.opacity(0.2), radius: 2)
+                        .position(
+                            x: ((10.5 - task.urgency) / 10) * geo.size.width,
+                            y: ((10.5 - task.importance) / 10) * geo.size.height
+                        )
+                        .onTapGesture { self.selectedTask = task }
                 }
             }
         }
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }
 
-struct XAxisLabel: View {
-    var body: some View { Text("Effort →").font(.caption).foregroundColor(.secondary).padding(.horizontal).offset(y: 20) }
-}
-
-struct YAxisLabel: View {
-    var body: some View { Text("Impact →").font(.caption).foregroundColor(.secondary).rotationEffect(.degrees(-90)).offset(x: -20) }
-}
-
+// MARK: - Task Input and Detail Views
 struct TaskInputView: View {
     @Binding var tasks: [TaskItem]
     @State private var newTaskName: String = ""
-    @State private var newEffort: Double = 5
-    @State private var newImpact: Double = 5
+    @State private var newImportance: Double = 5
+    @State private var newUrgency: Double = 5
     
     var body: some View {
         Form {
             Section(header: Text("Add a New Task")) {
-                TextField("Task Name (e.g., 'Deploy to production')", text: $newTaskName)
+                TextField("Task Name (e.g., 'File quarterly taxes')", text: $newTaskName)
                 VStack {
-                    HStack { Text("Effort"); Spacer(); Text("\(Int(newEffort)) / 10").foregroundColor(.secondary) }
-                    Slider(value: $newEffort, in: 1...10, step: 1)
+                    HStack { Text("Importance"); Spacer(); Text("\(Int(newImportance)) / 10").foregroundColor(.secondary) }
+                    Slider(value: $newImportance, in: 1...10, step: 1)
                 }
                 VStack {
-                    HStack { Text("Impact"); Spacer(); Text("\(Int(newImpact)) / 10").foregroundColor(.secondary) }
-                    Slider(value: $newImpact, in: 1...10, step: 1)
+                    HStack { Text("Urgency"); Spacer(); Text("\(Int(newUrgency)) / 10").foregroundColor(.secondary) }
+                    Slider(value: $newUrgency, in: 1...10, step: 1)
                 }
                 Button(action: addTask) {
                     HStack { Spacer(); Image(systemName: "plus.circle.fill"); Text("Plot Task"); Spacer() }
@@ -348,11 +272,32 @@ struct TaskInputView: View {
     
     private func addTask() {
         guard !newTaskName.isEmpty else { return }
-        let newTask = TaskItem(name: newTaskName, effort: newEffort, impact: newImpact)
+        let newTask = TaskItem(name: newTaskName, importance: newImportance, urgency: newUrgency)
         withAnimation(.spring()) { tasks.append(newTask) }
-        newTaskName = ""; newEffort = 5; newImpact = 5
-        // Hide keyboard
+        newTaskName = ""; newImportance = 5; newUrgency = 5
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+}
+
+struct AISummaryView: View {
+    @Binding var summary: String?
+    @Binding var isLoading: Bool
+    @Environment(\.dismiss) var dismiss
+    
+    var body: some View {
+        NavigationView {
+            VStack(alignment: .leading, spacing: 20) {
+                if isLoading {
+                    HStack(spacing: 15) { ProgressView(); Text("FocusAI is analyzing...") }.padding()
+                } else if let summary = summary {
+                    Text(summary).font(.title3).fontWeight(.medium).multilineTextAlignment(.leading).padding()
+                }
+                Spacer()
+            }
+            .navigationTitle("AI Summary").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
+        }
+        .presentationDetents([.height(200)])
     }
 }
 
@@ -362,16 +307,15 @@ struct TaskDetailView: View {
         VStack(alignment: .leading, spacing: 20) {
             Text(task.name).font(.largeTitle).fontWeight(.bold)
             HStack {
-                VStack(alignment: .leading) { Text("Impact").font(.headline).foregroundColor(.secondary); Text("\(Int(task.impact)) / 10").font(.title2).fontWeight(.semibold) }
+                VStack(alignment: .leading) { Text("Importance").font(.headline).foregroundColor(.secondary); Text("\(Int(task.importance)) / 10").font(.title2).fontWeight(.semibold) }
                 Spacer()
-                VStack(alignment: .leading) { Text("Effort").font(.headline).foregroundColor(.secondary); Text("\(Int(task.effort)) / 10").font(.title2).fontWeight(.semibold) }
+                VStack(alignment: .leading) { Text("Urgency").font(.headline).foregroundColor(.secondary); Text("\(Int(task.urgency)) / 10").font(.title2).fontWeight(.semibold) }
             }.padding().background(Color(.secondarySystemGroupedBackground)).cornerRadius(12)
             Spacer()
         }.padding().presentationDetents([.height(200)])
     }
 }
 
-// MARK: - Preview
 struct FocusView_Previews: PreviewProvider {
     static var previews: some View {
         FocusView()
