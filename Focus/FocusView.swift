@@ -8,63 +8,136 @@ struct TaskItem: Identifiable, Hashable {
     var impact: Double // Scale of 1 to 10
 }
 
-// MARK: - AI Service (Placeholder)
-// In a real app, this would make a network request to an LLM API.
+// MARK: - Secrets Management
+// This struct safely loads the API key from the Secrets.plist file.
+struct Secrets {
+    static var groqApiKey: String? {
+        guard let path = Bundle.main.path(forResource: "Secrets", ofType: "plist"),
+              let dict = NSDictionary(contentsOfFile: path) as? [String: AnyObject] else {
+            return nil
+        }
+        return dict["GroqApiKey"] as? String
+    }
+}
+
+// MARK: - Groq API Networking Layer
+
+// Custom error for our API service
+enum APIError: Error, LocalizedError {
+    case missingApiKey
+    case invalidURL
+    case requestFailed(Error)
+    case invalidResponse
+    case noData
+    case decodingError(Error)
+    
+    var errorDescription: String? {
+        switch self {
+        case .missingApiKey: return "Groq API Key is missing. Please add it to Secrets.plist."
+        case .invalidURL: return "The API endpoint URL is invalid."
+        case .requestFailed: return "The network request failed."
+        case .invalidResponse: return "Received an invalid response from the server."
+        case .noData: return "No content was returned from the AI."
+        case .decodingError: return "Failed to decode the server's response."
+        }
+    }
+}
+
+// Codable structs to match the Groq API JSON structure
+struct GroqRequest: Codable {
+    let messages: [ChatMessage]
+    let model: String
+    let temperature: Double
+}
+
+struct ChatMessage: Codable {
+    let role: String
+    let content: String
+}
+
+struct GroqResponse: Codable {
+    let choices: [Choice]
+}
+
+struct Choice: Codable {
+    let message: ChatMessage
+}
+
+
+// The updated AI Service to make real network calls
 class AIService {
     
-    // This is the core AI function for this feature.
-    static func getStrategicSummary(for tasks: [TaskItem], completion: @escaping (Result<String, Error>) -> Void) {
+    private static let groqAPIEndpoint = "https://api.groq.com/openai/v4/chat/completions"
+    
+    // This is the core AI function. It's now async and can throw errors.
+    static func getStrategicSummary(for tasks: [TaskItem]) async throws -> String {
         
-        // 1. Categorize tasks for the AI prompt
+        // 1. Ensure API Key exists
+        guard let apiKey = Secrets.groqApiKey else {
+            throw APIError.missingApiKey
+        }
+        
+        // 2. Categorize tasks for the prompt
         let quickWins = tasks.filter { $0.impact > 5 && $0.effort <= 5 }
         let majorProjects = tasks.filter { $0.impact > 5 && $0.effort > 5 }
         let fillIns = tasks.filter { $0.impact <= 5 && $0.effort <= 5 }
         let thanklessTasks = tasks.filter { $0.impact <= 5 && $0.effort > 5 }
         
-        // 2. Build a detailed prompt for the LLM
-        let prompt = """
-        You are a world-class productivity coach and strategic advisor. Analyze the following list of tasks, which have been categorized into an Eisenhower Matrix.
-        
-        **Matrix Snapshot:**
-        - **Quick Wins (High Impact, Low Effort):** \(quickWins.count) tasks. \(quickWins.map { $0.name }.joined(separator: ", "))
-        - **Major Projects (High Impact, High Effort):** \(majorProjects.count) tasks. \(majorProjects.map { $0.name }.joined(separator: ", "))
-        - **Fill-ins (Low Impact, Low Effort):** \(fillIns.count) tasks. \(fillIns.map { $0.name }.joined(separator: ", "))
-        - **Thankless Tasks (Low Impact, High Effort):** \(thanklessTasks.count) tasks. \(thanklessTasks.map { $0.name }.joined(separator: ", "))
-
-        **Your Task:**
-        Provide a concise, actionable summary based on this distribution.
-        1. Start with a brief, encouraging overview of the current situation.
-        2. Provide 2-3 specific, bulleted recommendations on what to focus on or what to change.
-        3. Keep the tone professional, insightful, and motivating.
-        4. Format your response using markdown.
+        // 3. Perfect the Prompt for Llama3
+        // The system prompt sets the AI's persona and instructions.
+        let systemPrompt = """
+        You are FocusAI, a world-class productivity coach. Your tone is insightful, encouraging, and highly strategic.
+        Analyze the user's task list from an Eisenhower Matrix. Provide a concise, actionable summary formatted in markdown.
+        - Start with a sharp, one-sentence overview.
+        - Use bullet points for 2-3 specific recommendations.
+        - Focus on the *'why'* behind your advice (e.g., 'Tackle Quick Wins to build momentum').
+        - Address the user directly ('You have...', 'Your focus should be...').
         """
         
-        print("--- Sending Prompt to AI ---")
-        print(prompt)
-        print("--------------------------")
+        // The user prompt provides the data.
+        let userPrompt = """
+        Here is my current task distribution:
+        - Quick Wins (High Impact, Low Effort): \(quickWins.count) tasks. Tasks: \(quickWins.map { $0.name }.joined(separator: ", "))
+        - Major Projects (High Impact, High Effort): \(majorProjects.count) tasks. Tasks: \(majorProjects.map { $0.name }.joined(separator: ", "))
+        - Fill-ins (Low Impact, Low Effort): \(fillIns.count) tasks. Tasks: \(fillIns.map { $0.name }.joined(separator: ", "))
+        - Thankless Tasks (Low Impact, High Effort): \(thanklessTasks.count) tasks. Tasks: \(thanklessTasks.map { $0.name }.joined(separator: ", "))
         
-        // 3. Simulate network delay and a realistic LLM response
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            
-            // This is a mocked response. A real LLM would generate this dynamically.
-            let mockSummary = """
-            ### Strategic Summary
-            
-            You have a solid overview of your priorities. Your focus is spread across several key areas, which is a good start. Let's sharpen that focus.
-            
-            **Key Recommendations:**
-            
-            *   **Capitalize on Quick Wins:** You have **\(quickWins.count) high-impact, low-effort tasks**. Tackle these first to build momentum and deliver immediate value. Start with **"\(quickWins.first?.name ?? "your top quick win")"**.
-            
-            *   **Plan Your Major Projects:** Your **\(majorProjects.count) major projects** are crucial for long-term success. Choose one to be your primary focus and break it down into smaller, more manageable steps. Don't try to do them all at once.
-            
-            *   **Delegate or Defer:** The **\(thanklessTasks.count) thankless tasks** are a potential energy drain. Scrutinize these carefully. Can they be delegated, automated, or eliminated entirely? They are actively pulling you away from high-impact work.
-            
-            Keep up the great work. A clear plan is the first step to outstanding results.
-            """
-            
-            completion(.success(mockSummary))
+        Give me your strategic analysis.
+        """
+
+        let messages = [
+            ChatMessage(role: "system", content: systemPrompt),
+            ChatMessage(role: "user", content: userPrompt)
+        ]
+        
+        // 4. Build the Request
+        let groqRequest = GroqRequest(messages: messages, model: "llama3-8b-8192", temperature: 0.7)
+        
+        guard let url = URL(string: groqAPIEndpoint) else {
+            throw APIError.invalidURL
         }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(groqRequest)
+        
+        // 5. Execute the network call
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw APIError.invalidResponse
+        }
+        
+        // 6. Decode the response and return the content
+        let decodedResponse = try JSONDecoder().decode(GroqResponse.self, from: data)
+        
+        guard let content = decodedResponse.choices.first?.message.content else {
+            throw APIError.noData
+        }
+        
+        return content
     }
 }
 
@@ -74,14 +147,13 @@ struct FocusView: View {
     
     // MARK: State Management
     @State private var tasks: [TaskItem] = [
-        .init(name: "Design new app icon", effort: 3, impact: 8),
-        .init(name: "Refactor database schema", effort: 9, impact: 9),
-        .init(name: "Write weekly blog post", effort: 4, impact: 6),
-        .init(name: "Fix minor UI bug", effort: 1, impact: 4),
-        .init(name: "Organize team meeting", effort: 2, impact: 2),
-        .init(name: "Research Q4 strategy", effort: 10, impact: 10),
-        .init(name: "Update dependencies", effort: 6, impact: 3),
-        .init(name: "Answer support emails", effort: 7, impact: 4)
+        .init(name: "Launch marketing campaign", effort: 4, impact: 9),
+        .init(name: "Overhaul user authentication", effort: 8, impact: 10),
+        .init(name: "Respond to customer feedback", effort: 3, impact: 6),
+        .init(name: "Clean up project file structure", effort: 2, impact: 2),
+        .init(name: "Research competitor APIs", effort: 7, impact: 7),
+        .init(name: "Deprecate old V1 API", effort: 9, impact: 5),
+        .init(name: "Fix typo on landing page", effort: 1, impact: 3)
     ]
     
     @State private var selectedTask: TaskItem?
@@ -103,43 +175,52 @@ struct FocusView: View {
             .navigationTitle("Strategic Focus")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                // AI INSIGHTS BUTTON
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button(action: fetchAISummary) {
+                    Button(action: {
+                        // Trigger the async task
+                        fetchAISummary()
+                    }) {
                         Label("AI Insights", systemImage: "sparkles")
                     }
                 }
             }
-            // Sheet for AI Summary
             .sheet(isPresented: $showAISummarySheet) {
                 AISummaryView(summary: $aiSummary, isLoading: $isFetchingSummary)
             }
-            // Sheet to show task details
             .sheet(item: $selectedTask) { task in
                 TaskDetailView(task: task)
             }
         }
     }
     
-    // Function to trigger the AI analysis
+    // Updated to use modern async/await
     private func fetchAISummary() {
         isFetchingSummary = true
-        aiSummary = nil // Clear previous summary
-        showAISummarySheet = true // Show the sheet immediately with loading indicator
+        aiSummary = nil
+        showAISummarySheet = true
         
-        AIService.getStrategicSummary(for: tasks) { result in
-            switch result {
-            case .success(let summary):
-                self.aiSummary = summary
-            case .failure(let error):
-                self.aiSummary = "An error occurred: \(error.localizedDescription)"
+        Task {
+            do {
+                let summary = try await AIService.getStrategicSummary(for: tasks)
+                // UI updates must be on the main thread
+                await MainActor.run {
+                    self.aiSummary = summary
+                    self.isFetchingSummary = false
+                }
+            } catch {
+                await MainActor.run {
+                    // Display the specific error to the user
+                    self.aiSummary = "### Error\n\n\(error.localizedDescription)"
+                    self.isFetchingSummary = false
+                }
             }
-            isFetchingSummary = false
         }
     }
 }
 
-// MARK: - AI Summary View (for the sheet)
+// MARK: - ALL OTHER SUB-VIEWS (Unchanged)
+// (The rest of the file remains the same as the previous version)
+
 struct AISummaryView: View {
     @Binding var summary: String?
     @Binding var isLoading: Bool
@@ -151,10 +232,10 @@ struct AISummaryView: View {
                 if isLoading {
                     ProgressView()
                         .progressViewStyle(.circular)
-                    Text("AI is analyzing your tasks...")
+                    Text("FocusAI is analyzing your tasks...")
                         .foregroundColor(.secondary)
+                        .padding()
                 } else if let summary = summary {
-                    // Use AttributedString to render markdown
                     ScrollView {
                         Text(try! AttributedString(markdown: summary))
                             .padding()
@@ -162,26 +243,20 @@ struct AISummaryView: View {
                 } else {
                     Text("No summary available.")
                 }
-                
                 Spacer()
             }
             .navigationTitle("AI Strategic Summary")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
+                    Button("Done") { dismiss() }
                 }
             }
         }
-        // Recommended sheet size
         .presentationDetents([.medium, .large])
     }
 }
 
-
-// MARK: - Eisenhower Matrix View
 struct EisenhowerMatrixView: View {
     let tasks: [TaskItem]
     @Binding var selectedTask: TaskItem?
@@ -207,7 +282,6 @@ struct EisenhowerMatrixView: View {
     }
 }
 
-// MARK: - Quadrant View
 struct QuadrantView: View {
     let title: String, subtitle: String, tasks: [TaskItem]
     @Binding var selectedTask: TaskItem?
@@ -239,7 +313,6 @@ struct QuadrantView: View {
     }
 }
 
-// MARK: - UI Components (Axis, Input, Detail)
 struct XAxisLabel: View {
     var body: some View { Text("Effort →").font(.caption).foregroundColor(.secondary).padding(.horizontal).offset(y: 20) }
 }
@@ -278,6 +351,8 @@ struct TaskInputView: View {
         let newTask = TaskItem(name: newTaskName, effort: newEffort, impact: newImpact)
         withAnimation(.spring()) { tasks.append(newTask) }
         newTaskName = ""; newEffort = 5; newImpact = 5
+        // Hide keyboard
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 }
 
