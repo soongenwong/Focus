@@ -92,7 +92,6 @@ class AIService {
 // MARK: - Main View
 struct FocusView: View {
     
-    // CHANGE 2: Tasks array now starts empty for a blank canvas.
     @State private var tasks: [TaskItem] = []
     
     @State private var selectedTask: TaskItem?
@@ -109,14 +108,14 @@ struct FocusView: View {
                 TaskInputView(tasks: $tasks)
             }
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Eisenhower Matrix")
+            .navigationTitle("FOCUS")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button(action: fetchAISummary) {
                         Label("AI Insights", systemImage: "sparkles")
                     }
-                    .disabled(tasks.isEmpty) // Disable button if there are no tasks
+                    .disabled(tasks.isEmpty)
                 }
             }
             .sheet(isPresented: $showAISummarySheet) {
@@ -141,24 +140,7 @@ struct FocusView: View {
     }
 }
 
-// MARK: - UI Helper View for Vertical Text
-// CHANGE 1: New View to render text vertically, character by character.
-struct VerticalTextView: View {
-    let text: String
-    
-    var body: some View {
-        VStack(spacing: 2) {
-            ForEach(Array(text.enumerated()), id: \.offset) { _, character in
-                Text(String(character))
-                    .kerning(1.5)
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(.secondary)
-            }
-        }
-    }
-}
-
-// MARK: - Eisenhower Matrix View
+// MARK: - Eisenhower Matrix View (Updated with Rotated Text)
 struct EisenhowerMatrixView: View {
     let tasks: [TaskItem]
     @Binding var selectedTask: TaskItem?
@@ -171,15 +153,33 @@ struct EisenhowerMatrixView: View {
     var body: some View {
         VStack(spacing: 3) {
             HStack(spacing: 0) {
-                Spacer(minLength: 20)
+                Spacer().frame(width: 20) // Spacer to align with the vertical labels' width
                 Text("URGENT").kerning(1.5).font(.caption.weight(.semibold)).foregroundColor(.secondary).frame(maxWidth: .infinity)
                 Text("NOT URGENT").kerning(1.5).font(.caption.weight(.semibold)).foregroundColor(.secondary).frame(maxWidth: .infinity)
             }.padding(.bottom, 4)
 
             HStack(spacing: 3) {
-                // CHANGE 1: Using the new VerticalTextView.
-                VerticalTextView(text: "IMPORTANT")
-                    .frame(width: 20)
+                // CHANGE: This VStack now contains the rotated Text views.
+                VStack(spacing: 3) {
+                    ZStack {
+                        Text("Important")
+                            .font(.callout.weight(.medium))
+                            .foregroundColor(.secondary)
+                            .rotationEffect(.degrees(-90))
+                            .fixedSize()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    
+                    ZStack {
+                        Text("Not Important")
+                            .font(.callout.weight(.medium))
+                            .foregroundColor(.secondary)
+                            .rotationEffect(.degrees(-90))
+                            .fixedSize()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .frame(width: 20)
                 
                 VStack(spacing: 3) {
                     HStack(spacing: 3) {
@@ -192,15 +192,6 @@ struct EisenhowerMatrixView: View {
                     }
                 }
             }
-            
-            HStack(spacing: 3) {
-                // CHANGE 1: Using the new VerticalTextView.
-                VerticalTextView(text: "NOT IMPORTANT")
-                    .frame(width: 20)
-                Spacer()
-            }
-            .offset(y: -135)
-            .frame(maxHeight: 0)
         }
     }
 }
@@ -228,7 +219,6 @@ struct QuadrantView: View {
             GeometryReader { geo in
                 ForEach(tasks) { task in
                     Circle().fill(.white)
-                        // CHANGE 3: Increased frame size for larger dots.
                         .frame(width: 14, height: 14)
                         .shadow(color: .black.opacity(0.2), radius: 2)
                         .position(
