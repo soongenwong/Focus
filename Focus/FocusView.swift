@@ -93,9 +93,11 @@ class AIService {
 struct FocusView: View {
     
     @State private var tasks: [TaskItem] = []
-    
     @State private var selectedTask: TaskItem?
+    
     @State private var showAISummarySheet = false
+    @State private var showTaskListView = false
+    
     @State private var aiSummary: String?
     @State private var isFetchingSummary = false
     
@@ -117,12 +119,28 @@ struct FocusView: View {
                     }
                     .disabled(tasks.isEmpty)
                 }
+                
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showTaskListView = true
+                    } label: {
+                        Label("All Tasks", systemImage: "list.bullet")
+                    }
+                    .disabled(tasks.isEmpty)
+                }
             }
             .sheet(isPresented: $showAISummarySheet) {
                 AISummaryView(summary: $aiSummary, isLoading: $isFetchingSummary)
             }
+            // CHANGE: Pass the onDelete closure to the detail view
             .sheet(item: $selectedTask) { task in
-                TaskDetailView(task: task)
+                TaskDetailView(task: task) {
+                    deleteTask(withId: task.id)
+                }
+            }
+            // CHANGE: Pass a binding of tasks to the list view
+            .sheet(isPresented: $showTaskListView) {
+                TaskListView(tasks: $tasks, selectedTask: $selectedTask, isPresented: $showTaskListView)
             }
         }
     }
@@ -138,99 +156,100 @@ struct FocusView: View {
             }
         }
     }
+    
+    // CHANGE: New function to handle deletion from anywhere
+    private func deleteTask(withId id: UUID) {
+        tasks.removeAll { $0.id == id }
+    }
 }
 
-// MARK: - Eisenhower Matrix View (Updated with Rotated Text)
+// MARK: - Task List View (with Deletion)
+struct TaskListView: View {
+    // CHANGE: Now uses a binding to modify the source array
+    @Binding var tasks: [TaskItem]
+    @Binding var selectedTask: TaskItem?
+    @Binding var isPresented: Bool
+    
+    var body: some View {
+        NavigationView {
+            Group {
+                if tasks.isEmpty {
+                    Text("No tasks yet.").foregroundColor(.secondary)
+                } else {
+                    List {
+                        // CHANGE: ForEach now allows for the .onDelete modifier
+                        ForEach(tasks) { task in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(task.name).fontWeight(.medium)
+                                Text("Importance: \(Int(task.importance))/10 ・ Urgency: \(Int(task.urgency))/10")
+                                    .font(.caption).foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedTask = task
+                                isPresented = false
+                            }
+                        }
+                        .onDelete(perform: deleteTask) // This enables swipe-to-delete
+                    }
+                }
+            }
+            .navigationTitle("All Tasks")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { isPresented = false } }
+                ToolbarItem(placement: .navigationBarLeading) { EditButton() } // Standard iOS Edit/Done button
+            }
+        }
+    }
+    
+    private func deleteTask(at offsets: IndexSet) {
+        tasks.remove(atOffsets: offsets)
+    }
+}
+
+// MARK: - Eisenhower Matrix and Quadrant Views
 struct EisenhowerMatrixView: View {
     let tasks: [TaskItem]
     @Binding var selectedTask: TaskItem?
-    
-    var doTasks: [TaskItem]         { tasks.filter { $0.importance > 5 && $0.urgency > 5 } }
-    var planTasks: [TaskItem]       { tasks.filter { $0.importance > 5 && $0.urgency <= 5 } }
-    var delegateTasks: [TaskItem]   { tasks.filter { $0.importance <= 5 && $0.urgency > 5 } }
-    var deleteTasks: [TaskItem]     { tasks.filter { $0.importance <= 5 && $0.urgency <= 5 } }
-    
+    var doTasks: [TaskItem] { tasks.filter { $0.importance > 5 && $0.urgency > 5 } }
+    var planTasks: [TaskItem] { tasks.filter { $0.importance > 5 && $0.urgency <= 5 } }
+    var delegateTasks: [TaskItem] { tasks.filter { $0.importance <= 5 && $0.urgency > 5 } }
+    var deleteTasks: [TaskItem] { tasks.filter { $0.importance <= 5 && $0.urgency <= 5 } }
     var body: some View {
         VStack(spacing: 3) {
             HStack(spacing: 0) {
-                Spacer().frame(width: 20) // Spacer to align with the vertical labels' width
-                Text("URGENT").kerning(1.5).font(.caption.weight(.semibold)).foregroundColor(.secondary).frame(maxWidth: .infinity)
+                Spacer().frame(width: 20); Text("URGENT").kerning(1.5).font(.caption.weight(.semibold)).foregroundColor(.secondary).frame(maxWidth: .infinity)
                 Text("NOT URGENT").kerning(1.5).font(.caption.weight(.semibold)).foregroundColor(.secondary).frame(maxWidth: .infinity)
             }.padding(.bottom, 4)
-
             HStack(spacing: 3) {
-                // CHANGE: This VStack now contains the rotated Text views.
                 VStack(spacing: 3) {
-                    ZStack {
-                        Text("Important")
-                            .font(.callout.weight(.medium))
-                            .foregroundColor(.secondary)
-                            .rotationEffect(.degrees(-90))
-                            .fixedSize()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    
-                    ZStack {
-                        Text("Not Important")
-                            .font(.callout.weight(.medium))
-                            .foregroundColor(.secondary)
-                            .rotationEffect(.degrees(-90))
-                            .fixedSize()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .frame(width: 20)
-                
+                    ZStack { Text("Important").font(.callout.weight(.medium)).foregroundColor(.secondary).rotationEffect(.degrees(-90)).fixedSize() }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ZStack { Text("Not Important").font(.callout.weight(.medium)).foregroundColor(.secondary).rotationEffect(.degrees(-90)).fixedSize() }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }.frame(width: 20)
                 VStack(spacing: 3) {
-                    HStack(spacing: 3) {
-                        QuadrantView(title: "DO", subtitle: "immediately", tasks: doTasks, selectedTask: $selectedTask, color: .eisenhowerRed, iconName: "checkmark")
-                        QuadrantView(title: "PLAN", subtitle: "and prioritize", tasks: planTasks, selectedTask: $selectedTask, color: .eisenhowerOrange, iconName: "clock")
-                    }
-                    HStack(spacing: 3) {
-                        QuadrantView(title: "DELEGATE", subtitle: "for completion", tasks: delegateTasks, selectedTask: $selectedTask, color: .eisenhowerGreen, iconName: "arrow.right")
-                        QuadrantView(title: "DELETE", subtitle: "these tasks", tasks: deleteTasks, selectedTask: $selectedTask, color: .eisenhowerGrey, iconName: "xmark")
-                    }
+                    HStack(spacing: 3) { QuadrantView(title: "DO", subtitle: "immediately", tasks: doTasks, selectedTask: $selectedTask, color: .eisenhowerRed, iconName: "checkmark"); QuadrantView(title: "PLAN", subtitle: "and prioritize", tasks: planTasks, selectedTask: $selectedTask, color: .eisenhowerOrange, iconName: "clock") }
+                    HStack(spacing: 3) { QuadrantView(title: "DELEGATE", subtitle: "for completion", tasks: delegateTasks, selectedTask: $selectedTask, color: .eisenhowerGreen, iconName: "arrow.right"); QuadrantView(title: "DELETE", subtitle: "these tasks", tasks: deleteTasks, selectedTask: $selectedTask, color: .eisenhowerGrey, iconName: "xmark") }
                 }
             }
         }
     }
 }
-
-// MARK: - Quadrant View
 struct QuadrantView: View {
     let title: String, subtitle: String, tasks: [TaskItem]
     @Binding var selectedTask: TaskItem?
-    let color: Color
-    let iconName: String
-    
+    let color: Color; let iconName: String
     var body: some View {
         ZStack {
-            color
-            Image(systemName: iconName).font(.system(size: 80, weight: .light)).foregroundColor(.white.opacity(0.15))
-            
-            VStack(alignment: .leading, spacing: 0) {
-                Text(title).font(.title2.bold())
-                Text(subtitle).font(.body)
-            }
-            .foregroundColor(.white)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding()
-
+            color; Image(systemName: iconName).font(.system(size: 80, weight: .light)).foregroundColor(.white.opacity(0.15))
+            VStack(alignment: .leading, spacing: 0) { Text(title).font(.title2.bold()); Text(subtitle).font(.body) }.foregroundColor(.white).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding()
             GeometryReader { geo in
                 ForEach(tasks) { task in
-                    Circle().fill(.white)
-                        .frame(width: 14, height: 14)
-                        .shadow(color: .black.opacity(0.2), radius: 2)
-                        .position(
-                            x: ((10.5 - task.urgency) / 10) * geo.size.width,
-                            y: ((10.5 - task.importance) / 10) * geo.size.height
-                        )
-                        .onTapGesture { self.selectedTask = task }
+                    Circle().fill(.white).frame(width: 14, height: 14).shadow(color: .black.opacity(0.2), radius: 2).position(x: ((10.5 - task.urgency) / 10) * geo.size.width, y: ((10.5 - task.importance) / 10) * geo.size.height).onTapGesture { self.selectedTask = task }
                 }
             }
-        }
-        .aspectRatio(1, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 4))
+        }.aspectRatio(1, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 4))
     }
 }
 
@@ -240,69 +259,77 @@ struct TaskInputView: View {
     @State private var newTaskName: String = ""
     @State private var newImportance: Double = 5
     @State private var newUrgency: Double = 5
-    
     var body: some View {
         Form {
             Section(header: Text("Add a New Task")) {
                 TextField("Task Name (e.g., 'File quarterly taxes')", text: $newTaskName)
-                VStack {
-                    HStack { Text("Importance"); Spacer(); Text("\(Int(newImportance)) / 10").foregroundColor(.secondary) }
-                    Slider(value: $newImportance, in: 1...10, step: 1)
-                }
-                VStack {
-                    HStack { Text("Urgency"); Spacer(); Text("\(Int(newUrgency)) / 10").foregroundColor(.secondary) }
-                    Slider(value: $newUrgency, in: 1...10, step: 1)
-                }
-                Button(action: addTask) {
-                    HStack { Spacer(); Image(systemName: "plus.circle.fill"); Text("Plot Task"); Spacer() }
-                }.disabled(newTaskName.isEmpty)
+                VStack { HStack { Text("Importance"); Spacer(); Text("\(Int(newImportance)) / 10").foregroundColor(.secondary) }; Slider(value: $newImportance, in: 1...10, step: 1) }
+                VStack { HStack { Text("Urgency"); Spacer(); Text("\(Int(newUrgency)) / 10").foregroundColor(.secondary) }; Slider(value: $newUrgency, in: 1...10, step: 1) }
+                Button(action: addTask) { HStack { Spacer(); Image(systemName: "plus.circle.fill"); Text("Plot Task"); Spacer() } }.disabled(newTaskName.isEmpty)
             }
         }.frame(height: 320)
     }
-    
     private func addTask() {
-        guard !newTaskName.isEmpty else { return }
-        let newTask = TaskItem(name: newTaskName, importance: newImportance, urgency: newUrgency)
-        withAnimation(.spring()) { tasks.append(newTask) }
-        newTaskName = ""; newImportance = 5; newUrgency = 5
-        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        guard !newTaskName.isEmpty else { return }; let newTask = TaskItem(name: newTaskName, importance: newImportance, urgency: newUrgency); withAnimation(.spring()) { tasks.append(newTask) }
+        newTaskName = ""; newImportance = 5; newUrgency = 5; UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+}
+struct AISummaryView: View {
+    @Binding var summary: String?; @Binding var isLoading: Bool; @Environment(\.dismiss) var dismiss
+    var body: some View {
+        NavigationView {
+            VStack(alignment: .leading, spacing: 20) {
+                if isLoading { HStack(spacing: 15) { ProgressView(); Text("FocusAI is analyzing...") }.padding() } else if let summary = summary { Text(summary).font(.title3).fontWeight(.medium).multilineTextAlignment(.leading).padding() }
+                Spacer()
+            }.navigationTitle("AI Summary").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
+        }.presentationDetents([.height(200)])
     }
 }
 
-struct AISummaryView: View {
-    @Binding var summary: String?
-    @Binding var isLoading: Bool
+// MARK: - Task Detail View (with Deletion)
+struct TaskDetailView: View {
+    let task: TaskItem
+    var onDelete: () -> Void // CHANGE: Closure to handle deletion
+    
     @Environment(\.dismiss) var dismiss
+    @State private var showConfirmDelete = false
     
     var body: some View {
         NavigationView {
             VStack(alignment: .leading, spacing: 20) {
-                if isLoading {
-                    HStack(spacing: 15) { ProgressView(); Text("FocusAI is analyzing...") }.padding()
-                } else if let summary = summary {
-                    Text(summary).font(.title3).fontWeight(.medium).multilineTextAlignment(.leading).padding()
-                }
+                Text(task.name).font(.largeTitle).fontWeight(.bold)
+                HStack {
+                    VStack(alignment: .leading) { Text("Importance").font(.headline).foregroundColor(.secondary); Text("\(Int(task.importance)) / 10").font(.title2).fontWeight(.semibold) }
+                    Spacer()
+                    VStack(alignment: .leading) { Text("Urgency").font(.headline).foregroundColor(.secondary); Text("\(Int(task.urgency)) / 10").font(.title2).fontWeight(.semibold) }
+                }.padding().background(Color(.secondarySystemGroupedBackground)).cornerRadius(12)
                 Spacer()
             }
-            .navigationTitle("AI Summary").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Done") { dismiss() } } }
+            .padding()
+            .navigationTitle("Task Details")
+            .navigationBarTitleDisplayMode(.inline)
+            // CHANGE: Add toolbar with a delete button
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(role: .destructive) {
+                        showConfirmDelete = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                }
+            }
+            // CHANGE: Add confirmation dialog for safe deletion
+            .confirmationDialog("Delete this task?", isPresented: $showConfirmDelete, titleVisibility: .visible) {
+                Button("Delete Task", role: .destructive) {
+                    onDelete()
+                    dismiss()
+                }
+            } message: {
+                Text("This action cannot be undone.")
+            }
         }
-        .presentationDetents([.height(200)])
-    }
-}
-
-struct TaskDetailView: View {
-    let task: TaskItem
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text(task.name).font(.largeTitle).fontWeight(.bold)
-            HStack {
-                VStack(alignment: .leading) { Text("Importance").font(.headline).foregroundColor(.secondary); Text("\(Int(task.importance)) / 10").font(.title2).fontWeight(.semibold) }
-                Spacer()
-                VStack(alignment: .leading) { Text("Urgency").font(.headline).foregroundColor(.secondary); Text("\(Int(task.urgency)) / 10").font(.title2).fontWeight(.semibold) }
-            }.padding().background(Color(.secondarySystemGroupedBackground)).cornerRadius(12)
-            Spacer()
-        }.padding().presentationDetents([.height(200)])
+        .presentationDetents([.height(300)]) // Increased height for the nav bar
     }
 }
 
